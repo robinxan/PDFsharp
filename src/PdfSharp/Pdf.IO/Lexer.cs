@@ -173,7 +173,7 @@ namespace PdfSharp.Pdf.IO
         /// </summary>
         public byte[] ReadStream(int length)
         {
-            int pos;
+            long pos;
 
             // Skip illegal blanks behind «stream».
             while (_currChar == Chars.SP)
@@ -194,15 +194,45 @@ namespace PdfSharp.Pdf.IO
             byte[] bytes = new byte[length];
             int read = _pdfSteam.Read(bytes, 0, length);
             Debug.Assert(read == length);
-            // With corrupted files, read could be different from length.
+            // With corrupted files, read could be different from length. Find real length by searching for endstream
             if (bytes.Length != read)
             {
-                Array.Resize(ref bytes, read);
+                var endStreamFound = false;
+                _pdfSteam.Position = pos; // reset positon
+                while (!endStreamFound)
+                {
+                    var currentChar = (char)_pdfSteam.ReadByte();
+                    if (currentChar == 'e')
+                    {
+                        var tempPos = _pdfSteam.Position;
+                        var buffer = new byte[8];
+                        _pdfSteam.Read(buffer, 0, 8);
+                        if(IsNdStream(buffer))
+                        {
+                            length = (int)(pos - _pdfSteam.Position + 9);
+                            read = _pdfSteam.Read(bytes, 0, length);
+                            Array.Resize(ref bytes, read);
+                            endStreamFound = true;
+                        }
+                        else
+                        {
+                            _pdfSteam.Position = tempPos;
+                        }
+                    }
+                    else if(currentChar == Chars.EOF)
+                        ParserDiagnostics.HandleUnexpectedCharacter(currentChar);
+                }
             }
 
             // Synchronize idxChar etc.
-            Position = pos + read;
+            Position = (int)(pos + read);
             return bytes;
+        }
+
+        static bool IsNdStream(byte[] buffer)
+        {
+            var str = ASCIIEncoding.ASCII.GetString(buffer);
+            return (str == "ndstream");
         }
 
         /// <summary>
@@ -617,6 +647,8 @@ namespace PdfSharp.Pdf.IO
             }
             else
             {
+                if (_nextChar == Chars.EOF)
+                    Debug.WriteLine("EOF found");
                 _currChar = _nextChar;
                 _nextChar = (char)_pdfSteam.ReadByte();
                 _idxChar++;
@@ -892,7 +924,17 @@ namespace PdfSharp.Pdf.IO
 
         readonly int _pdfLength;
         int _idxChar;
-        char _currChar;
+        char _temp;
+        char _currChar
+        {
+            get => _temp;
+            set
+            {
+                if (value == Chars.EOF)
+                    Debug.WriteLine("EOF Found...");
+                _temp = value;
+            }
+        }
         char _nextChar;
         StringBuilder _token;
         Symbol _symbol = Symbol.None;
